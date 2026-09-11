@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
-import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox
+
+try:
+    import tkinter as tk
+    from tkinter import messagebox
+except ModuleNotFoundError:  # The active entry point uses the PyQt editor.
+    tk = None
+    messagebox = None
 
 from .terrain.models import ArenaScene, TerrainConfig, TerrainElement, SUPPORTED_ELEMENT_TYPES
 from .terrain.presets import playground_scene
