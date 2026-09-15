@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ..i18n import normalize_language, tr
+from ..robots import ROBOTS, robot_label
 
 
 class ControlBridge:
@@ -87,10 +88,10 @@ class RobotControlPanel(QMainWindow):
                  robot: str = "m20") -> None:
         super().__init__()
         self.language = normalize_language(language)
-        if robot not in ("m20", "go2"):
+        if robot not in ROBOTS:
             raise ValueError(f"unsupported robot: {robot}")
         self.robot = robot
-        self.robot_label = "M20" if robot == "m20" else "Go2"
+        self.robot_label = robot_label(robot)
         self.xml_path = xml_path
         self.policy_path = policy_path
         self.config_path = config_path
@@ -290,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ArenaX Robotics robot PyQt control panel")
     parser.add_argument("--xml", type=Path, required=True)
     parser.add_argument("--policy", type=Path, required=True)
-    parser.add_argument("--robot", choices=("m20", "go2"), default="m20",
+    parser.add_argument("--robot", choices=ROBOTS, default="m20",
                         help="robot profile for the policy (default: m20)")
     parser.add_argument("--robot-config", type=Path)
     parser.add_argument("--duration", type=float, default=3600.0)

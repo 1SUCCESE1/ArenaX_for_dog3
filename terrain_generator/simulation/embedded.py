@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 
 from .m20 import M20Simulation
 from ..i18n import normalize_language, tr
+from ..robots import robot_label
 
 
 class MuJoCoRenderWorker(QThread):
@@ -139,9 +140,9 @@ class MuJoCoRenderWorker(QThread):
             mujoco.mjv_defaultOption(render_options)
             render_options.geomgroup[1] = 0
             render_options.geomgroup[2] = 1
-            robot_label = "Go2" if self.config_path and self.config_path.stem == "go2" else "M20"
+            robot_label_text = robot_label(self.config_path.stem if self.config_path else "m20")
             if simulation is not None:
-                status = f"{robot_label} ONNX policy started" if self.language == "en" else f"{robot_label} ONNX 策略已启动"
+                status = f"{robot_label_text} ONNX policy started" if self.language == "en" else f"{robot_label_text} ONNX 策略已启动"
             else:
                 status = tr(self.language, "MuJoCo 场景已加载")
             self.status_changed.emit(status)

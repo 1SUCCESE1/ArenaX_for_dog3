@@ -24,6 +24,7 @@ from .terrain.presets import playground_scene
 from .terrain.scene import export_scene, load_scene
 from .terrain.library import TerrainLibrary, compose_robot_scene
 from .i18n import normalize_language, tr
+from .robots import ROBOTS, robot_config, robot_label, robot_policy, robot_scene
 
 
 ELEMENT_LABELS = {
@@ -482,8 +483,8 @@ class QtArenaEditor(QMainWindow):
         self.robot_label = QLabel(tr(self.language, "机器人策略"))
         self.robot_combo = QComboBox()
         self.robot_combo.addItem(tr(self.language, "不加载机器人"), None)
-        self.robot_combo.addItem("M20", "m20")
-        self.robot_combo.addItem("Go2", "go2")
+        for _robot in ROBOTS:
+            self.robot_combo.addItem(robot_label(_robot), _robot)
         self.robot_combo.setToolTip(tr(self.language, "选择机器人及其对应策略；默认不加载机器人"))
         right_layout.addWidget(self.robot_label)
         right_layout.addWidget(self.robot_combo)
@@ -786,8 +787,8 @@ class QtArenaEditor(QMainWindow):
     def export_and_view(self) -> None:
         robot = self.robot_combo.currentData()
         robot_enabled = robot is not None
-        scene_ref = BUNDLED_M20_SCENE if robot == "m20" else BUNDLED_GO2_SCENE
-        policy_ref = BUNDLED_M20_POLICY if robot == "m20" else BUNDLED_GO2_POLICY
+        scene_ref = robot_scene(robot) if robot_enabled else None
+        policy_ref = robot_policy(robot) if robot_enabled else None
         bundled_scene = PROJECT_ROOT / scene_ref if robot_enabled else None
         if robot_enabled:
             bundled_policy = PROJECT_ROOT / policy_ref
@@ -850,12 +851,12 @@ class QtArenaEditor(QMainWindow):
         self.latest_xml = path
         robot = self.robot_combo.currentData()
         if robot is not None:
-            robot_scene = BUNDLED_M20_SCENE if robot == "m20" else BUNDLED_GO2_SCENE
-            robot_policy = BUNDLED_M20_POLICY if robot == "m20" else BUNDLED_GO2_POLICY
+            scene_path = robot_scene(robot)
+            policy_path = robot_policy(robot)
             try:
                 imported_dir = self.output_dir.expanduser().resolve() / "library_import"
                 self.latest_xml = compose_robot_scene(
-                    path, PROJECT_ROOT / robot_scene,
+                    path, PROJECT_ROOT / scene_path,
                     imported_dir / f"{path.stem}_{robot}.xml",
                 )
             except Exception as exc:
@@ -864,7 +865,7 @@ class QtArenaEditor(QMainWindow):
                     f"{tr(self.language, '无法将 M20 加载到地形库场景：\n')}{exc}",
                 )
                 return
-            self.latest_policy = PROJECT_ROOT / robot_policy
+            self.latest_policy = PROJECT_ROOT / policy_path
         else:
             self.latest_policy = None
         self.next_button.setVisible(True)
@@ -884,7 +885,7 @@ class QtArenaEditor(QMainWindow):
         robot = self.robot_combo.currentData()
         config = None
         if self.latest_policy:
-            config = PROJECT_ROOT / ("configs/m20.yaml" if robot == "m20" else "configs/go2.yaml")
+            config = robot_config(robot)
         self.simulation_page.start(self.latest_xml, self.latest_policy, config)
         self.page_stack.setCurrentWidget(self.simulation_page)
 

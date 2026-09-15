@@ -5,3 +5,4 @@ __pycache__/
 venv/
 generated/
 *.egg-info/
+MUJOCO_LOG.TXT

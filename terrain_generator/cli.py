@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", choices=("zh", "en"), default="zh",
                         help="language for graphical interfaces (default: zh)")
     parser.add_argument("--policy", type=Path, help="run an ONNX policy in the generated or supplied XML scene")
-    parser.add_argument("--robot", choices=("m20", "go2"), default="m20", help="robot profile for ONNX inference")
+    parser.add_argument("--robot", choices=("m20", "go2", "dog3"), default="m20", help="robot profile for ONNX inference")
     parser.add_argument("--robot-config", type=Path, help="YAML policy/runtime profile")
     parser.add_argument("--duration", type=float, default=30.0, help="simulation duration per policy episode")
     parser.add_argument("--episodes", type=int, default=1, help="number of policy episodes")
@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         args.xml = TerrainLibrary(args.terrain_library).resolve(args.terrain_name)
 
     if args.policy and not args.xml and not args.base_scene:
-        robot_dir = "m20" if args.robot == "m20" else "go2"
+        robot_dir = args.robot
         scene_name = "scene.xml"
         bundled_scene = Path(__file__).resolve().parent.parent / "assets" / robot_dir / "mjcf" / scene_name
         if bundled_scene.is_file():

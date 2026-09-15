@@ -6,6 +6,7 @@ import json
 import socket
 import sys
 import time
+from collections import deque
 from threading import Lock, Thread
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,37 @@ def _gravity_orientation(quat: np.ndarray) -> np.ndarray:
         -2.0 * (qz * qy + qw * qx),
         1.0 - 2.0 * (qw * qw + qz * qz),
     ], dtype=np.float32)
+
+
+# Observation term names the runner understands.  A profile lists the subset it
+# needs in ``obs_terms`` and they are concatenated in that order, so a new robot
+# only needs a YAML profile rather than a code change.
+_DEFAULT_OBS_TERMS = ("commands", "ang_vel", "gravity", "dof_pos", "dof_vel", "actions")
+
+# Per-term observation width, used to validate ``num_obs`` against ``obs_terms``.
+_OBS_TERM_WIDTHS = {"commands": 3, "ang_vel": 3, "gravity": 3, "gait_phase": 6}
+
+
+def _resolve_action_scales(config: dict, num_actions: int) -> np.ndarray:
+    """Per-joint action scale, from either ``action_scales`` (list) or ``action_scale`` (scalar)."""
+    if "action_scales" in config:
+        scales = np.asarray(config["action_scales"], dtype=np.float32)
+        if scales.size != num_actions:
+            raise ValueError(f"config action_scales must contain {num_actions} entries")
+        return scales
+    return np.full(num_actions, float(config.get("action_scale", 0.25)), dtype=np.float32)
+
+
+def _gait_phase(sim_time: float, period: float) -> np.ndarray:
+    """Six-dimensional trot phase, matching the training-side ``gait_phase`` term.
+
+    ``phi = 2*pi*t/period`` -> ``[sin, cos, sin(phi/2), cos(phi/2), sin(phi/4), cos(phi/4)]``.
+    """
+    phi = 2.0 * np.pi * sim_time / max(period, 1e-6)
+    return np.array(
+        [np.sin(phi), np.cos(phi), np.sin(phi / 2), np.cos(phi / 2), np.sin(phi / 4), np.cos(phi / 4)],
+        dtype=np.float32,
+    )
 
 
 class OnnxPolicy:
@@ -347,6 +379,20 @@ class M20Simulation:
             if len(values) != self.num_actions:
                 raise ValueError(f"M20 config {values_name} must contain {self.num_actions} entries")
 
+        self.action_scales = _resolve_action_scales(self.config, self.num_actions)
+        self.obs_terms = list(self.config.get("obs_terms", _DEFAULT_OBS_TERMS))
+        self.gait_period = float(self.config.get("gait_period", 1.0))
+        unknown = [name for name in self.obs_terms if name not in _OBS_TERM_WIDTHS and name not in ("dof_pos", "dof_vel", "actions")]
+        if unknown:
+            raise ValueError(f"config obs_terms contains unsupported terms: {unknown}")
+        expected_obs = sum(
+            _OBS_TERM_WIDTHS.get(name, self.num_actions) for name in self.obs_terms
+        )
+        if expected_obs != self.num_obs:
+            raise ValueError(
+                f"config num_obs={self.num_obs} but obs_terms {self.obs_terms} produce {expected_obs}"
+            )
+
         self.joint_ids = [self._named_id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in self.joint_names]
         self.actuator_ids = [self._actuator_for_joint(name) for name in self.joint_names]
         self.base_body_id = self._find_base_body(self.config.get("base_body_names", ["base_link"]))
@@ -355,6 +401,15 @@ class M20Simulation:
         self.base_qvel_adr = int(self.model.jnt_dofadr[self.base_joint_id])
 
         self.action = np.zeros(self.num_actions, dtype=np.float32)
+        # Isaac's DelayedPDActuator (max_delay=20 ms for dog3) makes the policy
+        # expect its output to be applied one control period late, with the same
+        # lagged value fed back as `last_action`. Zero delay => no gait.
+        self.actuator_delay_steps = int(self.config.get("actuator_delay_steps", 0))
+        self._action_buffer = deque(
+            [np.zeros(self.num_actions, dtype=np.float32)
+             for _ in range(self.actuator_delay_steps + 1)],
+            maxlen=self.actuator_delay_steps + 1,
+        )
         self.observation = np.zeros(self.num_obs, dtype=np.float32)
         self.observation_history = np.zeros(self.num_obs * (self.num_obs_hist + 1), dtype=np.float32)
         self.counter = 0
@@ -419,17 +474,58 @@ class M20Simulation:
         linear_velocity = _quat_rotate_inverse_wxyz(quat, base_qvel[:3]).astype(np.float32)
         return positions, velocities, quat, angular_velocity, linear_velocity
 
+    def _terrain_height_at(self, x: float, y: float, z_high: float) -> float | None:
+        """Height of the static terrain (geom group 0) below a point, else None.
+
+        Only group 0 is tested, so the ray cannot hit the robot itself.
+        """
+        pnt = np.array([x, y, z_high], dtype=np.float64)
+        vec = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+        geomid = np.zeros(1, dtype=np.int32)
+        group = np.zeros(6, dtype=np.uint8)
+        group[0] = 1
+        dist = mujoco.mj_ray(self.model, self.data, pnt, vec, group, 1, -1, geomid)
+        return None if dist < 0.0 else z_high - float(dist)
+
+    def _ground_height_under_spawn(self, z_high: float, radius: float = 0.25) -> float | None:
+        """Terrain height around the spawn point.
+
+        Sampled on a small ring rather than at the origin: the scene's demo ball
+        starts above the spawn point and would otherwise be the first hit.
+        """
+        heights = []
+        for dx, dy in ((radius, 0.0), (-radius, 0.0), (0.0, radius), (0.0, -radius)):
+            height = self._terrain_height_at(dx, dy, z_high)
+            if height is not None:
+                heights.append(height)
+        return float(np.median(heights)) if heights else None
+
     def reset(self) -> None:
         mujoco.mj_resetData(self.model, self.data)
+        mujoco.mj_forward(self.model, self.data)
         base_height = self.config.get("init_base_height")
         if base_height is not None:
-            self.data.qpos[self.base_qpos_adr + 2] = float(base_height)
+            # init_base_height is a stance height, so it is measured from the
+            # terrain surface: on a heightfield an absolute spawn point would
+            # bury the robot and jam its legs against the ground.
+            z = float(base_height)
+            ground = self._ground_height_under_spawn(z + 1.0)
+            if ground is not None:
+                z += ground
+            # Dropping the robot a few centimetres lets it settle onto the local
+            # bumps; spawning flush with a rough surface jams the legs on
+            # contact and the policy then refuses to walk.
+            z += float(self.config.get("spawn_clearance", 0.0))
+            self.data.qpos[self.base_qpos_adr + 2] = z
         self.data.qpos[self.base_qpos_adr + 3:self.base_qpos_adr + 7] = [1.0, 0.0, 0.0, 0.0]
         for joint_id, angle in zip(self.joint_ids, self.default_angles):
             self.data.qpos[int(self.model.jnt_qposadr[joint_id])] = float(angle)
         self.data.qvel[:] = 0.0
         self.data.ctrl[:] = 0.0
         self.action[:] = 0.0
+        self._action_buffer.extend(
+            [np.zeros(self.num_actions, dtype=np.float32)] * len(self._action_buffer)
+        )
         self.observation[:] = 0.0
         self.observation_history[:] = 0.0
         self.counter = 0
@@ -451,12 +547,20 @@ class M20Simulation:
         dof_error = (positions - self.default_angles) * float(self.config.get("dof_pos_scale", 1.0))
         dof_error[self.wheel_indices] = 0.0
         dof_velocity = velocities * float(self.config.get("dof_vel_scale", 0.05))
-        self.observation[:3] = self.command.values() * self.cmd_scale
-        self.observation[3:6] = angular_velocity * float(self.config.get("ang_vel_scale", 0.25))
-        self.observation[6:9] = _gravity_orientation(quat)
-        self.observation[9:9 + self.num_actions] = dof_error
-        self.observation[9 + self.num_actions:9 + 2 * self.num_actions] = dof_velocity
-        self.observation[9 + 2 * self.num_actions:9 + 3 * self.num_actions] = self.action
+        terms = {
+            "commands": self.command.values() * self.cmd_scale,
+            "ang_vel": angular_velocity * float(self.config.get("ang_vel_scale", 0.25)),
+            "gravity": _gravity_orientation(quat),
+            "dof_pos": dof_error,
+            "dof_vel": dof_velocity,
+            "actions": self.action,  # previous step's action (last_action in training terms)
+            "gait_phase": _gait_phase(float(self.data.time), self.gait_period),
+        }
+        offset = 0
+        for name in self.obs_terms:
+            value = np.asarray(terms[name], dtype=np.float32).reshape(-1)
+            self.observation[offset:offset + value.size] = value
+            offset += value.size
         self.observation_history[:-self.num_obs] = self.observation_history[self.num_obs:]
         self.observation_history[-self.num_obs:] = self.observation
 
@@ -464,7 +568,7 @@ class M20Simulation:
         positions, velocities, _, _, _ = self._state()
         position_error = self.default_angles - positions
         position_error[self.wheel_indices] = 0.0
-        position_target_offset = self.action * float(self.config.get("action_scale", 0.25))
+        position_target_offset = self.action * self.action_scales
         position_target_offset[self.wheel_indices] = 0.0
         wheel_velocity_target = np.zeros_like(self.action)
         wheel_velocity_target[self.wheel_indices] = self.action[self.wheel_indices] * float(self.config.get("vel_scale", 5.0))
@@ -494,16 +598,18 @@ class M20Simulation:
         self.command.handle_key(key)
 
     def _setup_camera(self, viewer: Any) -> None:
-        # Collision proxies are kept in group 1 in the M20 model and are
-        # required for contact dynamics, but should not obscure the visual
-        # meshes in the interactive viewer.
-        viewer.opt.geomgroup[1] = 0
-        viewer.opt.geomgroup[2] = 1
+        # Visual meshes live in group 2 so collision proxies can stay hidden.
+        hidden = self.config.get("viewer_hidden_geomgroups", [1, 3])
+        shown = self.config.get("viewer_visible_geomgroups", [2])
+        for group in hidden:
+            viewer.opt.geomgroup[int(group)] = 0
+        for group in shown:
+            viewer.opt.geomgroup[int(group)] = 1
         viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
         viewer.cam.trackbodyid = self.base_body_id
-        viewer.cam.distance = 2.5
-        viewer.cam.elevation = -20.0
-        viewer.cam.azimuth = 60.0
+        viewer.cam.distance = float(self.config.get("viewer_camera_distance", 2.5))
+        viewer.cam.elevation = float(self.config.get("viewer_camera_elevation", -20.0))
+        viewer.cam.azimuth = float(self.config.get("viewer_camera_azimuth", 60.0))
 
     def _step(self) -> None:
         with self._reset_lock:
@@ -513,11 +619,13 @@ class M20Simulation:
             self.reset()
         if self.counter % self.control_decimation == 0:
             self._compute_observation()
-            self.action = self.policy(self.observation_history)
-            if self.action.size != self.num_actions:
+            fresh = np.asarray(self.policy(self.observation_history), dtype=np.float32).reshape(-1)
+            if fresh.size != self.num_actions:
                 raise ValueError(
-                    f"policy output mismatch: expected {self.num_actions}, got {self.action.size}"
+                    f"policy output mismatch: expected {self.num_actions}, got {fresh.size}"
                 )
+            self._action_buffer.append(fresh)
+            self.action = self._action_buffer[0]   # lagged by actuator_delay_steps
         self._apply_torques(self._compute_torques())
         mujoco.mj_step(self.model, self.data)
         _, _, quat, _, _ = self._state()
