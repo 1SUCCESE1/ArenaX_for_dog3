@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .robots import ROBOTS
 from .terrain.models import ArenaScene, SUPPORTED_TERRAIN_TYPES, TerrainConfig
 from .terrain.mujoco_xml import load_and_validate
 from .terrain.presets import playground_scene
@@ -45,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", choices=("zh", "en"), default="zh",
                         help="language for graphical interfaces (default: zh)")
     parser.add_argument("--policy", type=Path, help="run an ONNX policy in the generated or supplied XML scene")
-    parser.add_argument("--robot", choices=("m20", "go2", "dog3"), default="m20", help="robot profile for ONNX inference")
+    parser.add_argument("--robot", choices=ROBOTS, default="m20", help="robot profile for ONNX inference")
     parser.add_argument("--robot-config", type=Path, help="YAML policy/runtime profile")
     parser.add_argument("--duration", type=float, default=30.0, help="simulation duration per policy episode")
     parser.add_argument("--episodes", type=int, default=1, help="number of policy episodes")

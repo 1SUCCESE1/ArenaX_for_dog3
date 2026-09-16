@@ -1,0 +1,85 @@
+# ArenaX Robotics D1 inference profile.
+# Bundled policy: policies/d1/policy.onnx  (InstinctLab run 20260916_112951, model_5000)
+#
+# D1 is a WHEEL-LEGGED quadruped: 16 DOF = 4 legs x (hip, thigh, calf, wheel).
+# Legs are position-PD; wheels are driven by a software velocity loop
+# (tau = kd * (action*vel_scale - dq)), which is what the policy was trained
+# against (Isaac ImplicitActuator on the wheel joints + JointVelocityAction).
+control_dt: 0.02
+simulation_dt: 0.005
+control_decimation: 4
+
+# Isaac's DelayedPDActuator applies the policy output one control period late
+# (min_delay=0, max_delay=4); the same 1-step lag is used here.
+actuator_delay_steps: 1
+
+num_actions: 16
+num_obs: 57
+num_obs_hist: 0
+
+# Observation layout -- MUST match the training-side PolicyCfg order:
+#   ang_vel(3) gravity(3) commands(3) dof_pos(16) dof_vel(16) actions(16) = 57
+# dof_pos keeps all 16 entries but the wheel slots are zeroed (same as the
+# training term joint_pos_rel_without_wheel).
+obs_terms: ["ang_vel", "gravity", "commands", "dof_pos", "dof_vel", "actions"]
+
+# Training default pose (D1_CFG init_state): hip 0.0, thigh 0.8, calf -1.5.
+# Joint zero is NOT the stance for D1 (at zero the legs are more extended), so
+# these must be the training defaults. The wheel entry is unused (zeroed in
+# dof_pos and excluded from the position loop).
+default_angles: [
+  0.0, 0.8, -1.5, 0.0,
+  0.0, 0.8, -1.5, 0.0,
+  0.0, 0.8, -1.5, 0.0,
+  0.0, 0.8, -1.5, 0.0
+]
+
+# Legs: stiffness 60 / damping 2.0 (Isaac DelayedPDActuator); wheels: kp 0 and
+# kd 0.5 acting as the software velocity-loop gain (Isaac wheel damping).
+kps: [60.0, 60.0, 60.0, 0.0, 60.0, 60.0, 60.0, 0.0, 60.0, 60.0, 60.0, 0.0, 60.0, 60.0, 60.0, 0.0]
+kds: [2.0, 2.0, 2.0, 0.5, 2.0, 2.0, 2.0, 0.5, 2.0, 2.0, 2.0, 0.5, 2.0, 2.0, 2.0, 0.5]
+# Training effort limits: legs 60 N*m, wheels 12 N*m.
+torque_limits: [60.0, 60.0, 60.0, 12.0, 60.0, 60.0, 60.0, 12.0, 60.0, 60.0, 60.0, 12.0, 60.0, 60.0, 60.0, 12.0]
+
+# Per-joint action scale (wheel entries unused; wheels use vel_scale below).
+action_scales: [
+  0.25, 0.25, 0.25, 0.0,
+  0.25, 0.25, 0.25, 0.0,
+  0.25, 0.25, 0.25, 0.0,
+  0.25, 0.25, 0.25, 0.0
+]
+vel_scale: 5.0
+
+cmd_scale: [2.0, 2.0, 0.25]
+ang_vel_scale: 0.25
+dof_pos_scale: 1.0
+dof_vel_scale: 0.05
+
+cmd_init: [0.5, 0.0, 0.0]
+default_speed: 0.5
+max_cmd: [1.0, 1.0, 1.0]
+gear_speeds: {1: 0.25, 2: 0.5, 3: 1.0}
+default_gear: 2
+
+# D1 stands ~0.45 m tall (legs at the training stance).
+init_base_height: 0.45
+spawn_clearance: 0.06
+base_body_names: [base_link]
+
+viewer_camera_distance: 1.2
+viewer_camera_elevation: -15.0
+viewer_camera_azimuth: 60.0
+
+# D1's MuJoCo model puts its visual meshes in geom group 1 (collisions in 3,
+# floor in 0) -- unlike dog3/go2, which use group 2. So the ArenaX default
+# (hide [1,3] / show [2]) hides the whole robot and only the demo ball shows.
+viewer_hidden_geomgroups: [3]
+viewer_visible_geomgroups: [1]
+
+joint_names: [
+  FL_hip_joint, FL_thigh_joint, FL_calf_joint, FL_foot_joint,
+  FR_hip_joint, FR_thigh_joint, FR_calf_joint, FR_foot_joint,
+  RL_hip_joint, RL_thigh_joint, RL_calf_joint, RL_foot_joint,
+  RR_hip_joint, RR_thigh_joint, RR_calf_joint, RR_foot_joint
+]
+wheel_indices: [3, 7, 11, 15]

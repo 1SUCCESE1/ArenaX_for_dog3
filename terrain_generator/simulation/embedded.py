@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
 
 from .m20 import M20Simulation
 from ..i18n import normalize_language, tr
-from ..robots import robot_label
+from ..robots import robot_label, viewer_geomgroups
 
 
 class MuJoCoRenderWorker(QThread):
@@ -131,15 +131,19 @@ class MuJoCoRenderWorker(QThread):
             model.vis.global_.offheight = max(int(model.vis.global_.offheight), self.height)
             renderer = mujoco.Renderer(model, height=self.height, width=self.width)
             camera = self._camera(simulation)
-            # M20's XML keeps collision geoms in group 1 and visual meshes in
-            # group 2.  Collision geometry is needed by the physics engine,
-            # but drawing it over the robot makes the model look like a blue
-            # wireframe.  Configure the renderer only (the model/data remain
-            # untouched) so contact shapes stay available for simulation.
+            # Collision geometry is needed by the physics engine, but drawing it
+            # over the robot makes the model look like a blue wireframe.  Which
+            # geom group holds the visual meshes differs per model (d1 uses
+            # group 1, m20/go2/dog3 use group 2), so read it from the profile.
+            # Configure the renderer only (the model/data remain untouched) so
+            # contact shapes stay available for simulation.
+            hidden_groups, visible_groups = viewer_geomgroups(self.config_path)
             render_options = mujoco.MjvOption()
             mujoco.mjv_defaultOption(render_options)
-            render_options.geomgroup[1] = 0
-            render_options.geomgroup[2] = 1
+            for group in hidden_groups:
+                render_options.geomgroup[int(group)] = 0
+            for group in visible_groups:
+                render_options.geomgroup[int(group)] = 1
             robot_label_text = robot_label(self.config_path.stem if self.config_path else "m20")
             if simulation is not None:
                 status = f"{robot_label_text} ONNX policy started" if self.language == "en" else f"{robot_label_text} ONNX 策略已启动"
