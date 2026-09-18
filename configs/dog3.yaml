@@ -5,8 +5,11 @@
 control_dt: 0.02
 simulation_dt: 0.005
 control_decimation: 4
-# Isaac's DelayedPDActuator applies the policy output one control period late;
-# the dog3 policy was trained that way and produces no gait at zero delay.
+# Isaac's DelayedPDActuator applies the policy output one control period late, so the
+# MuJoCo loop is lagged to match.  Fidelity alignment only: with the dog3 model's
+# self-collision bug fixed the policy walks at ~0.40 m/s with or without it, so this is
+# no longer what enables the gait.  The lag must be applied to both the torque and the
+# actions observation.
 actuator_delay_steps: 1
 
 num_actions: 12

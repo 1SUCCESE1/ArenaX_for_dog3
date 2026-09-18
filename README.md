@@ -1,6 +1,7 @@
 # ArenaX for dog3 / D1
 
-[English](README_en.md)
+> `README_en.md` 是**上游 ArenaX 的英文通用说明**（场地编辑器 / 地形生成），
+> 不覆盖本仓库的 dog3 / D1 接入；本文件才是本仓库的主文档。
 
 把 **dog3（12-DOF 纯腿四足）** 和 **D1（16-DOF 轮足四足）** 的策略接入
 [ArenaX Robotics](https://github.com/Lain-Ego0/ArenaX)，在 MuJoCo 中做地形与障碍通过性验证。
@@ -9,16 +10,27 @@
 
 1. **接入 dog3 与 D1** 两个机器人（模型、策略、配置、注册表）；
 2. 把机器人接入做成**配置驱动** —— 以后再加新机器人，只需补一份 profile，不必改代码；
-3. 修了两处 **sim2sim 保真度**问题（执行器延迟、出生高度），否则策略在纯 MuJoCo 里不出步态。
+3. 修了**三处 sim2sim 保真度**问题（dog3 模型的自碰撞与求解器、执行器延迟、出生高度）。
+   其中第一处是 dog3 在纯 MuJoCo 里几乎走不动的主因，见「本仓库相对上游的改动」第 2 节。
 
 ![场地编辑器](assets/Image/editor-overview.png)
 
 ```
 configs/<robot>.yaml                     运行时 profile（观测布局、增益、延迟、出生高度…）
 assets/<robot>/mjcf/{<robot>,scene}.xml  模型资产（含 meshes/*.STL）
-policies/<robot>/policy.onnx             ONNX 策略
+policies/<robot>/policy.onnx             当前启用的 ONNX 策略
 terrain_generator/robots.py              机器人注册表（CLI 与 GUI 下拉框都读它）
 ```
+
+dog3 备有两版策略，`policy.onnx` 是当前启用的那一份，想换直接拷过去即可：
+
+| 文件 | 来源 | 训练侧表现 |
+|---|---|---|
+| `policies/dog3/policy.onnx` | = rough（`dog3_locomotion_rough/20260915_102208`） | `error_vel_x ≈ 0.35`，崎岖地形上可爬 |
+| `policies/dog3/policy_flat.onnx` | flat（`dog3_locomotion_flat/20260914_194023`） | `error_vel_x ≈ 0.20`，平地更稳 |
+| `policies/dog3/policy_rough.onnx` | rough，与 `policy.onnx` 内容相同 | 仅为命名清晰留一份 |
+
+平地上两版几乎相同（身体系前向速度 rough 0.403 / flat 0.405 m/s）；差距要到崎岖地形才体现出来。
 
 ## 已接入机器人
 
@@ -39,12 +51,15 @@ m20 / go2 的既有行为保持不变。
 
 | 地形 | 前进速度 | 存活 | 最大倾角 |
 |---|---|---|---|
-| `flat` | 0.081 m/s | ✓ | 10.8° |
-| `noise` (height 0.05) | 0.084 m/s | ✓ | 10.0° |
-| `noise` (height 0.1) | 0.081 m/s | ✓ | 10.1° |
-| `stairs` (height 0.1) | 0.087 m/s | ✓ | 10.1° |
-| `obstacle_mix` (height 0.1) | 0.081 m/s | ✓ | 10.1° |
-| `slope` (height 0.1) | 0.027 m/s（上坡） | ✓ | 9.9° |
+| `flat` | 0.397 m/s | ✓ | 6.4° |
+| `noise` (height 0.05) | 0.359 m/s | ✓ | 7.6° |
+| `noise` (height 0.1) | 0.343 m/s | ✓ | 8.8° |
+| `stairs` (height 0.1) | 0.336 m/s | ✓ | 7.7° |
+| `obstacle_mix` (height 0.1) | 0.216 m/s | ✓ | 13.4° |
+| `slope` (height 0.1) | 0.374 m/s（上坡） | ✓ | 6.8° |
+
+（以上为修复 dog3 模型自碰撞后的实测；修复前同一策略在同一地形上只有 0.03–0.09 m/s，
+详见「本仓库相对上游的改动」第 2 节。）
 
 **D1**（16-DOF 轮足，跑 20 s）
 
@@ -56,8 +71,8 @@ m20 / go2 的既有行为保持不变。
 | `slope` (height 0.1) | 6.22 m | 0.31 m/s | ✓ | 1.64° |
 | `obstacle_mix` (height 0.05) | 2.82 m | 0.14 m/s | ✓ | 4.12° |
 
-两个机器人在全部内置地形上均无摔倒；D1 的跟踪约 0.31/0.5 ≈ 62%，与其训练侧
-`error_vel_xy ≈ 0.5`（"能用但不精准"）一致。
+两个机器人在全部内置地形上均无摔倒。dog3 平地跟踪 0.397/0.5 ≈ 79%；
+D1 的跟踪约 0.31/0.5 ≈ 62%，与其训练侧 `error_vel_xy ≈ 0.5`（"能用但不精准"）一致。
 
 ## 快速开始
 
@@ -130,22 +145,49 @@ Episode 1: {'survived': True, 'distance_x': 6.36, 'max_tilt_deg': 1.19}
 按老逻辑会把整只机器人藏掉、只剩演示小球。现在按 profile 的
 `viewer_hidden_geomgroups` / `viewer_visible_geomgroups` 决定。
 
-### 2. 两处 sim2sim 保真度修复
+### 2. sim2sim 保真度修复（三处）
 
-**执行器延迟**：训练端用的是 Isaac 的 `DelayedPDActuator(min_delay=0, max_delay=4)`，
-即 **4 个物理步 = 20 ms = 一个完整控制周期**；而纯 MuJoCo 回路是零延迟，策略因此不产生步态
-（关节摆幅只有 0.01–0.13 rad，原地站立）。补上 `actuator_delay_steps: 1` 后步态恢复。
+**① dog3 模型的自碰撞与求解器** —— 这是 dog3 在纯 MuJoCo 里几乎走不动的**主因**。
 
-延迟必须**同时**作用于「实际施加的力矩」和「回报给策略的 `last_action`」，两者不一致时效果反而更差：
+`assets/dog3/mjcf/dog3.xml` 里每个视觉 mesh 都写了 `contype="1"`，覆盖了 `visualgeom` 类的
+`contype="0"`。这些凸包因此进入了接触列表（`condim=1`，即无摩擦），与 `group="3"` 的碰撞基元
+（盒子 / 胶囊 / 球）互相穿插并参与求解。Isaac 侧以 `enabled_self_collisions=False` 导入 dog3，
+MuJoCo 没有这个开关，于是前腿整段被顶在机身上 —— `FR_thigh ↔ base_link` 在 750 个控制步中有
+**744 步**处于碰撞，机器人只是原地划腿。同批还去掉了 `<option>` 里的
+`solver="PGS" iterations="50"`（PGS/50 把四个足端接触解得过软，脚会打滑）。
 
-| 配置 | 前进速度 | 关节摆幅 |
+现在：视觉 mesh 恢复 `contype="0"`；新增 `class="robot_collision"`（`contype=2 / conaffinity=1`）
+挂到全部碰撞基元，使机器人自身基元互不相碰。掩码必须放在**具名 class** 上，不能放无名的
+`<default>` —— ArenaX 合并 XML 时地形 geom 会继承它，那会把机器人与地面的接触也一起关掉。
+
+实测（rough 策略，命令 0.5 m/s，平地 15 s，身体系前向速度）：
+
+| | 前进速度 | 自碰撞 / 控制步 |
 |---|---|---|
-| 无延迟 | ≈0 | 0.13 |
-| 只延迟观测回报的动作 | ≈0 | 0.13 |
-| 只延迟实际施加的力矩 | ≈0 | 0.29（腿在动但不前进） |
-| **两处一致延迟** | **0.080 m/s** | **0.35** |
+| 修复前 | 0.059 m/s | 1.94 |
+| **修复后** | **0.405 m/s** | **0** |
 
-**出生高度**：`init_base_height` 表示**站高**，因此应相对地形表面测量。原实现把它当成绝对 z，
+d1 / m20 / go2 的视觉 mesh 本来就都是 `contype="0"`，只有 dog3 写错 —— 这也解释了为什么只有
+dog3 表现异常。
+
+**② 执行器延迟**：训练端用的是 Isaac 的 `DelayedPDActuator(min_delay=0, max_delay=4)`，
+即最多 4 个物理步 = 20 ms = 一个完整控制周期。`actuator_delay_steps: 1` 让 MuJoCo 回路与之一致，
+且延迟**同时**作用于「实际施加的力矩」和「回报给策略的 `actions` 观测」，两边口径保持一致。
+
+> 注意：修复 ① 之前，这一步曾被当成"策略不出步态"的解药（当时零延迟下关节几乎不摆、原地站立，
+> 补上延迟才恢复到 0.080 m/s）。**修完模型后这个结论不再成立** —— 四种延迟配置现在都能正常
+> 行走，保留它只是为了与训练端对齐，不再是必需项：
+
+| 配置 | 前进速度 | 平均关节摆幅 |
+|---|---|---|
+| 无延迟 | 0.405 m/s | 0.637 rad |
+| 只延迟观测回报的动作 | 0.358 m/s | 0.614 rad |
+| 只延迟实际施加的力矩 | 0.428 m/s | 0.696 rad |
+| **两处一致延迟（当前配置）** | **0.403 m/s** | **0.671 rad** |
+
+（摆幅 = 12 个关节各自 max−min 的均值。）
+
+**③ 出生高度**：`init_base_height` 表示**站高**，因此应相对地形表面测量。原实现把它当成绝对 z，
 在高度场地形上机器人会被按进地形（接触数从 8 涨到 68），腿被卡死。现在 `reset()` 会先测量出生点
 周围的地面高度（4 点环状采样取中位数），再加上站高与 `spawn_clearance` 余量。
 
